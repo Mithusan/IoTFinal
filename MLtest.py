@@ -11,6 +11,7 @@ from picamera2.encoders import MJPEGEncoder
 from picamera2.outputs import FileOutput
 import os
 from libcamera import controls
+from ultralytics import YOLO
 
 colour = (0, 255, 0)
 origin = (0, 30)
@@ -19,10 +20,38 @@ scale = 1
 thickness = 2
 frameCount = 0
 
-def apply_timestamp(request):
+# Load YOLO model (ensure you have the model file, e.g., yolov8n.pt)
+model = YOLO("yolov8n.pt")  # Adjust path as needed
+
+def detect_human(request):
     timestamp = str(time.strftime("%Y-%m-%d %X"))
     with MappedArray(request, "main") as m:
-        cv2.putText(m.array, timestamp, origin, font, scale, colour, thickness)
+        frame = m.array
+        # Run YOLO detection
+        detection = model(frame)[0]
+        
+        nb_person = 0
+        # Loop over the detections
+        for box in detection.boxes:
+            data = box.data.tolist()[0]
+            accuracy = data[4]
+            label = model.names.get(box.cls.item())
+            
+            # Filter out low-confidence detections
+            if float(accuracy) < 0.7:
+                continue
+            else:
+                if label == "person":
+                    nb_person += 1  # Count the number of people detected
+                
+                # Draw bounding box and label on the frame
+                xmin, ymin, xmax, ymax = int(data[0]), int(data[1]), int(data[2]), int(data[3])
+                cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), colour, 2)
+                y = ymin - 15 if ymin - 15 > 15 else ymin + 15
+                cv2.putText(frame, f"{label} {accuracy*100:.1f}%", (xmin, y), font, 0.5, colour, 2)
+
+        # Add timestamp to the frame
+        cv2.putText(frame, timestamp, origin, font, scale, colour, thickness)
 
 PAGE = """\
 <html>
@@ -71,6 +100,11 @@ class StreamingHandler(server.BaseHTTPRequestHandler):
                     with output1.condition:
                         output1.condition.wait()
                         frame = output1.frame
+                        
+                    # Apply timestamp and human detection
+                    detect_human(frame)
+                    
+                    # Send the processed frame for streaming
                     self.wfile.write(b'--FRAME\r\n')
                     self.send_header('Content-Type', 'image/jpeg')
                     self.send_header('Content-Length', len(frame))
@@ -89,13 +123,6 @@ class StreamingServer(socketserver.ThreadingMixIn, server.HTTPServer):
     allow_reuse_address = True
     daemon_threads = True
 
-def h264_encode():
-    while not encode_abort:
-        now = datetime.datetime.now()
-
-        picam2.pre_callback = apply_timestamp
-        encoder2 = MJPEGEncoder()
-
 # Main streaming setup
 try:
     picam2 = Picamera2()
@@ -105,10 +132,6 @@ try:
     output1 = StreamingOutput()
     encoder1 = MJPEGEncoder()
     picam2.start_recording(encoder1, FileOutput(output1))
-
-    encode_abort = False
-    encode_thread = Thread(target=h264_encode, daemon=False)
-    encode_thread.start()
 
     address = ('', 8000)
     server = StreamingServer(address, StreamingHandler)
