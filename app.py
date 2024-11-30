@@ -1,7 +1,3 @@
-#!/usr/bin/python3
-
-#afullagar@gmail.com blog.fullys.xyz
-
 import logging
 import time
 import datetime
