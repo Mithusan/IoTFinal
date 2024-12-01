@@ -11,6 +11,12 @@ from picamera2.outputs import FileOutput
 import os
 from ultralytics import YOLO
 import RPi.GPIO as GPIO
+import numpy as np
+import openface 
+from openface import AlignDlib
+from openface import TorchNeuralNet
+import glob
+from scipy.spatial.distance import cosine
 
 colour = (0, 255, 0)  # Green for bounding boxes
 origin = (0, 30)
@@ -18,35 +24,95 @@ font = cv2.FONT_HERSHEY_SIMPLEX
 scale = 1
 thickness = 2
 frameCount = 0
-output_directory = "captured_images"  # Directory to save captured frames with detections
 max_images = 2  # Maximum number of images to keep
 motion_detected = False # Global flag to track motion detection status
 saved_images = [] # List to track saved images
 detection_timeout_event = Event() # Event for controlling detection thread timeout
+known_embeddings = {}
 
-# Ensure output directory exists
-if not os.path.exists(output_directory):
+# Directories
+output_directory = "captured_images"  # Directory to save captured frames with detections
+known_faces_folder = "known_faces"
+
+if os.path.exists(output_directory):
+    # Remove all files in the directory
+    for filename in os.listdir(output_directory):
+        file_path = os.path.join(output_directory, filename)
+        try:
+            os.remove(file_path)  # Remove file
+        except Exception as e:
+            print(f"Failed to delete {file_path}: {e}")
+else:
     os.makedirs(output_directory)
 
+# Models
+model = YOLO("yolov3-tiny.pt")
+align = AlignDlib('shape_predictor_68_face_landmarks.dat')
+net = TorchNeuralNet('nn4.small2.v1.t7')
 
-model = YOLO("yolov3-tinyu.pt")  # Ensure the file is in the working directory
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+def load_known_faces():
+    global known_embeddings
+    for image_path in glob.glob(os.path.join(known_faces_folder, "*.jpg")):
+        base_name = os.path.basename(image_path)
+        name = base_name.split('_')[0]
+
+        image = cv2.imread(image_path)
+        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        # Detect face and compute embedding
+        det = align.getLargestFaceBoundingBox(rgb_image)
+        if det is not None:
+            landmarks = align.findLandmarks(rgb_image, det)
+            embedding = net.forward(rgb_image, landmarks)
+            
+            # If this person already exists in the dictionary, append the new embedding
+            if name in known_embeddings:
+                known_embeddings[name].append(embedding)
+            else:
+                known_embeddings[name] = [embedding]  # Initialize with a list
+        else:
+            print(f"No face detected in {image_path}")
+
+def compute_similarity(embedding1, embedding2):
+    return 1 - cosine(embedding1, embedding2)
 
 def detect_faces(frame):
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) # Convert to grayscale
-
-    # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4))
-    gray = clahe.apply(gray)
-
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(100, 100))
+    global known_embeddings
     
-    return len(faces)
+    # Convert the frame to RGB (OpenFace works in RGB)
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    
+    # Detect faces using dlib's aligner
+    dets = align.getAllFaceBoundingBoxes(rgb_frame)
+    
+    matches = []
+    for det in dets:
+        # Get the facial landmarks for the detected face
+        landmarks = align.findLandmarks(rgb_frame, det)
+        
+        # Perform face recognition
+        face_embedding = net.forward(rgb_frame, landmarks)
+        
+        # Compare with known embeddings
+        best_match = None
+        best_similarity = 0.0
+        for name, embeddings in known_embeddings.items():  # Iterate over each person's embeddings
+            for known_embedding in embeddings:
+                similarity = compute_similarity(face_embedding, known_embedding)
+                if similarity > best_similarity and similarity > 0.6:  # Similarity threshold
+                    best_match = name
+                    best_similarity = similarity
+        
+        if best_match:
+            matches.append((best_match, best_similarity))
+            # Draw bounding box and label
+            x1, y1, x2, y2 = det.left(), det.top(), det.right(), det.bottom()
+            cv2.rectangle(frame, (x1, y1), (x2, y2), colour, thickness)
+            label = f"{best_match}: {best_similarity * 100:.2f}%"
+            cv2.putText(frame, label, (x1, y1 - 10), font, scale, colour, thickness)
+    return matches
 
 def detect_humans(frame):
-    # Detect faces first (to prioritize face detection)
-    face_detections = detect_faces(frame)
-    
     # Run YOLO inference
     img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) # Convert the frame to RGB
     results = model.predict(img, conf=0.5)  # Adjust confidence threshold if needed
@@ -66,7 +132,7 @@ def detect_humans(frame):
                 cv2.rectangle(frame, (x1, y1), (x2, y2), colour, thickness)
                 label = f"Person: {conf * 100:.2f}%"
                 cv2.putText(frame, label, (x1, y1 - 10), font, scale, colour, thickness)
-    return detections, frame, face_detections
+    return detections, frame
 
 def detection_thread():
     global frame
@@ -74,13 +140,14 @@ def detection_thread():
     while True:
         if frame is not None:
             # Detect both humans (YOLO) and faces (OpenCV)
-            detections, detected_frame, face_detections = detect_humans(frame)
-
-            if face_detections > 0:
-                print(f"Faces detected: {face_detections} face(s) detected.")
+            detections, detected_frame = detect_humans(frame)
 
             for _, _, _, _, conf in detections:
                 print(f"Human detected: {conf * 100:.2f}% confidence")
+                recognized_faces = detect_faces(detected_frame)
+
+                if recognized_faces:
+                    print(f"Face detected")
 
             # Save the frame with detections if a human is detected
             if detections:
@@ -167,6 +234,8 @@ class StreamingServer(socketserver.ThreadingMixIn, server.HTTPServer):
 frame = None
 
 try:
+    load_known_faces()
+
     picam2 = Picamera2()
     picam2.configure(picam2.create_video_configuration(main={"size": (1280, 720)}))
     picam2.set_controls({"FrameRate": 60})
