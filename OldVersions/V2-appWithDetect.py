@@ -25,7 +25,6 @@ frameCount = 0
 model = YOLO("yolov3-tinyu.pt")  # Ensure the file is in the working directory
 
 def detect_humans(frame):
-    """Run YOLOv3-tiny inference on a frame and return detections."""
     # Convert the frame to RGB
     img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
@@ -45,7 +44,6 @@ def detect_humans(frame):
     return detections
 
 def human_detection_thread():
-    """Thread to perform human detection and log results."""
     global frame
     while True:
         if frame is not None:

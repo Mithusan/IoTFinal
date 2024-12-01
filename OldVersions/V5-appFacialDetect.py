@@ -1,18 +1,16 @@
 import logging
-import time
 import datetime
 import io
 import cv2
 import socketserver
 from http import server
-from threading import Condition
+from threading import Condition, Thread, Event
 from picamera2 import MappedArray, Picamera2
 from picamera2.encoders import MJPEGEncoder
 from picamera2.outputs import FileOutput
 import os
 from ultralytics import YOLO
-import numpy as np
-from threading import Thread
+import RPi.GPIO as GPIO
 
 colour = (0, 255, 0)  # Green for bounding boxes
 origin = (0, 30)
@@ -22,22 +20,35 @@ thickness = 2
 frameCount = 0
 output_directory = "captured_images"  # Directory to save captured frames with detections
 max_images = 2  # Maximum number of images to keep
+motion_detected = False # Global flag to track motion detection status
+saved_images = [] # List to track saved images
+detection_timeout_event = Event() # Event for controlling detection thread timeout
 
 # Ensure output directory exists
 if not os.path.exists(output_directory):
     os.makedirs(output_directory)
 
-# Load YOLOv3-tiny model
-model = YOLO("yolov3-tinyu.pt")  # Ensure the file is in the working directory
 
-# List to track saved images
-saved_images = []
+model = YOLO("yolov3-tinyu.pt")  # Ensure the file is in the working directory
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+
+def detect_faces(frame):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) # Convert to grayscale
+
+    # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4))
+    gray = clahe.apply(gray)
+
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(100, 100))
+    
+    return len(faces)
 
 def detect_humans(frame):
-    # Convert the frame to RGB
-    img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
+    # Detect faces first (to prioritize face detection)
+    face_detections = detect_faces(frame)
+    
     # Run YOLO inference
+    img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) # Convert the frame to RGB
     results = model.predict(img, conf=0.5)  # Adjust confidence threshold if needed
 
     # Extract detections for "person" class (Class ID: 0)
@@ -55,21 +66,29 @@ def detect_humans(frame):
                 cv2.rectangle(frame, (x1, y1), (x2, y2), colour, thickness)
                 label = f"Person: {conf * 100:.2f}%"
                 cv2.putText(frame, label, (x1, y1 - 10), font, scale, colour, thickness)
-    return detections, frame
+    return detections, frame, face_detections
 
-def human_detection_thread():
+def detection_thread():
     global frame
+
     while True:
         if frame is not None:
-            detections, detected_frame = detect_humans(frame)
+            # Detect both humans (YOLO) and faces (OpenCV)
+            detections, detected_frame, face_detections = detect_humans(frame)
+
+            if face_detections > 0:
+                print(f"Faces detected: {face_detections} face(s) detected.")
+
             for _, _, _, _, conf in detections:
                 print(f"Human detected: {conf * 100:.2f}% confidence")
 
             # Save the frame with detections if a human is detected
             if detections:
+                img = cv2.cvtColor(detected_frame, cv2.COLOR_BGR2RGB)
+
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = os.path.join(output_directory, f"detected_{timestamp}.jpg")
-                cv2.imwrite(filename, detected_frame)
+                cv2.imwrite(filename, img)
                 saved_images.append(filename)
                 print(f"Saved frame as {filename}")
 
@@ -165,7 +184,7 @@ try:
     picam2.start_recording(encoder1, FileOutput(output1))
 
     # Start the human detection thread
-    detection_thread = Thread(target=human_detection_thread, daemon=True)
+    detection_thread = Thread(target=detection_thread, daemon=True)
     detection_thread.start()
 
     address = ('', 8000)
@@ -178,3 +197,4 @@ except Exception as e:
 
 finally:
     picam2.stop()
+    GPIO.cleanup()  # Clean up GPIO when done

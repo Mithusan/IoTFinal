@@ -38,7 +38,18 @@ GPIO.setmode(GPIO.BCM)
 MOTION_PIN = 17  # Pin connected to the HC-SR501 sensor
 GPIO.setup(MOTION_PIN, GPIO.IN)
 
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+
+def detect_faces(frame):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+    
+    return faces
+
 def detect_humans(frame):
+    # Detect faces first (to prioritize face detection)
+    face_detections = detect_faces(frame)
+    
     # Run YOLO inference
     results = model.predict(frame, conf=0.5)  # Adjust confidence threshold if needed
 
@@ -57,7 +68,7 @@ def detect_humans(frame):
                 cv2.rectangle(frame, (x1, y1), (x2, y2), colour, thickness)
                 label = f"Person: {conf * 100:.2f}%"
                 cv2.putText(frame, label, (x1, y1 - 10), font, scale, colour, thickness)
-    return detections, frame
+    return detections, frame, face_detections
 
 def detection_thread(timeout=5):
     global frame
@@ -67,8 +78,11 @@ def detection_thread(timeout=5):
     while time.time() - start_time < timeout:
         if img is not None:
             # Detect both humans (YOLO) and faces (OpenCV)
-            detections, detected_frame = detect_humans(img)
-            
+            detections, detected_frame, face_detections = detect_humans(img)
+
+            if face_detections:
+                print(f"Faces detected: {len(face_detections)} face(s) detected.")
+
             for _, _, _, _, conf in detections:
                 print(f"Human detected: {conf * 100:.2f}% confidence")
 

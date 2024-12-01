@@ -20,7 +20,6 @@ thickness = 2
 frameCount = 0
 
 def apply_timestamp(request):
-    """Function to overlay a timestamp on each frame."""
     timestamp = str(time.strftime("%Y-%m-%d %X"))
     with MappedArray(request, "main") as m:
         cv2.putText(m.array, timestamp, origin, font, scale, colour, thickness)

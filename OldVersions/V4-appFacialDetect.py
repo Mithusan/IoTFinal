@@ -1,5 +1,4 @@
 import logging
-import time
 import datetime
 import io
 import cv2
@@ -30,34 +29,27 @@ if not os.path.exists(output_directory):
     os.makedirs(output_directory)
 
 
-# Load YOLOv3-tiny model
 model = YOLO("yolov3-tinyu.pt")  # Ensure the file is in the working directory
-
-# Motion sensor setup (HC-SR501)
-GPIO.setmode(GPIO.BCM)
-MOTION_PIN = 17  # Pin connected to the HC-SR501 sensor
-GPIO.setup(MOTION_PIN, GPIO.IN)
-
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 
 def detect_faces(frame):
-    """Detect faces using OpenCV Haar Cascade and return the bounding boxes of detected faces."""
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)  # Convert to grayscale
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) # Convert to grayscale
+
+    # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4))
+    gray = clahe.apply(gray)
+
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(100, 100))
     
-    detected_faces = []
-    for (x, y, w, h) in faces:
-        detected_faces.append((x, y, x + w, y + h))  # Convert to (x1, y1, x2, y2)
-        cv2.rectangle(frame, (x, y), (x + w, y + h), face_colour, 2)  # Draw bounding box for faces
-    
-    return detected_faces
+    return len(faces)
 
 def detect_humans(frame):
     # Detect faces first (to prioritize face detection)
     face_detections = detect_faces(frame)
     
     # Run YOLO inference
-    results = model.predict(frame, conf=0.5)  # Adjust confidence threshold if needed
+    img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) # Convert the frame to RGB
+    results = model.predict(img, conf=0.5)  # Adjust confidence threshold if needed
 
     # Extract detections for "person" class (Class ID: 0)
     detections = []
@@ -76,30 +68,27 @@ def detect_humans(frame):
                 cv2.putText(frame, label, (x1, y1 - 10), font, scale, colour, thickness)
     return detections, frame, face_detections
 
-def detection_thread(timeout=5):
+def detection_thread():
     global frame
-    img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    start_time = time.time()
 
-    while time.time() - start_time < timeout:
-        if img is not None:
+    while True:
+        if frame is not None:
             # Detect both humans (YOLO) and faces (OpenCV)
-            detections, detected_frame, face_detections = detect_humans(img)
+            detections, detected_frame, face_detections = detect_humans(frame)
 
-            if face_detections:
-                print(f"Faces detected: {len(face_detections)} face(s) detected.")
+            if face_detections > 0:
+                print(f"Faces detected: {face_detections} face(s) detected.")
 
             for _, _, _, _, conf in detections:
                 print(f"Human detected: {conf * 100:.2f}% confidence")
 
-                if conf >= 0.5:  # Adjust confidence threshold if needed
-                    human_detected = True
-
             # Save the frame with detections if a human is detected
             if detections:
+                img = cv2.cvtColor(detected_frame, cv2.COLOR_BGR2RGB)
+
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = os.path.join(output_directory, f"detected_{timestamp}.jpg")
-                cv2.imwrite(filename, detected_frame)
+                cv2.imwrite(filename, img)
                 saved_images.append(filename)
                 print(f"Saved frame as {filename}")
 
@@ -108,26 +97,6 @@ def detection_thread(timeout=5):
                     oldest_image = saved_images.pop(0)
                     os.remove(oldest_image)
                     print(f"Deleted old image: {oldest_image}")
-
-                if human_detected:
-                    break
-
-        time.sleep(0.1)  # Add a small delay to prevent excessive CPU usage
-
-def motion_sensor_thread():
-    """Thread to monitor motion sensor and start detection when motion is detected."""
-    global motion_detected
-    while True:
-        if GPIO.input(MOTION_PIN):  # Motion detected
-            if not motion_detected:
-                print("Motion detected")
-                motion_detected = True
-                detection_thread = Thread(target=detection_thread, args=(10,), daemon=True)  # Run detection for 10 seconds
-                detection_thread.start()
-        else:
-            motion_detected = False  # Reset motion detection
-
-        time.sleep(1)  # Polling delay for motion sensor
 
 PAGE = """\
 <html>
@@ -198,11 +167,6 @@ class StreamingServer(socketserver.ThreadingMixIn, server.HTTPServer):
 frame = None
 
 try:
-    # Start the motion sensor thread to monitor for motion
-    motion_thread = Thread(target=motion_sensor_thread, daemon=True)
-    motion_thread.start()
-
-    # Set up the PiCamera
     picam2 = Picamera2()
     picam2.configure(picam2.create_video_configuration(main={"size": (1280, 720)}))
     picam2.set_controls({"FrameRate": 60})
@@ -219,7 +183,10 @@ try:
     encoder1 = MJPEGEncoder()
     picam2.start_recording(encoder1, FileOutput(output1))
 
-    # Start the streaming server
+    # Start the human detection thread
+    detection_thread = Thread(target=detection_thread, daemon=True)
+    detection_thread.start()
+
     address = ('', 8000)
     server = StreamingServer(address, StreamingHandler)
     server.serve_forever()
