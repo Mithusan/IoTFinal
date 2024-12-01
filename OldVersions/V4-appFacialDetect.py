@@ -11,6 +11,7 @@ from picamera2.outputs import FileOutput
 import os
 from ultralytics import YOLO
 import RPi.GPIO as GPIO
+import numpy as np
 
 colour = (0, 255, 0)  # Green for bounding boxes
 origin = (0, 30)
@@ -18,19 +19,32 @@ font = cv2.FONT_HERSHEY_SIMPLEX
 scale = 1
 thickness = 2
 frameCount = 0
-output_directory = "captured_images"  # Directory to save captured frames with detections
 max_images = 2  # Maximum number of images to keep
 motion_detected = False # Global flag to track motion detection status
 saved_images = [] # List to track saved images
-detection_timeout_event = Event() # Event for controlling detection thread timeout
+faces = []
+labels = []
+
+# Directories
+output_directory = "captured_images"
+known_faces_dir = "known_faces" 
 
 # Ensure output directory exists
 if not os.path.exists(output_directory):
     os.makedirs(output_directory)
 
-
-model = YOLO("yolov3-tinyu.pt")  # Ensure the file is in the working directory
+# Models
+model = YOLO("models/yolov3-tinyu.pt")  # Ensure the file is in the working directory
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+recognizer = cv2.face.LBPHFaceRecognizer_create()
+recognizer.read('trainer.yml')
+
+# Load the name to label mapping
+name_mapping = {}
+with open('name_mapping.txt', 'r') as f:
+    for line in f:
+        label, name = line.strip().split(': ')
+        name_mapping[int(label)] = name
 
 def detect_faces(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) # Convert to grayscale
@@ -38,14 +52,21 @@ def detect_faces(frame):
     # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4))
     gray = clahe.apply(gray)
-
     faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(100, 100))
     
-    return len(faces)
+    name = "Unknown"
+    confidence = 0
+    for (x, y, w, h) in faces:
+        face_region = gray[y:y+h, x:x+w]  # Extract face region from the image
+        label, confidence = recognizer.predict(face_region)  # Recognize the face
+
+        name = name_mapping.get(label, "Unknown Person")
+
+    return name, frame, confidence
 
 def detect_humans(frame):
     # Detect faces first (to prioritize face detection)
-    face_detections = detect_faces(frame)
+    detected_person, face_detections, confidence = detect_faces(frame)
     
     # Run YOLO inference
     img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) # Convert the frame to RGB
@@ -66,7 +87,7 @@ def detect_humans(frame):
                 cv2.rectangle(frame, (x1, y1), (x2, y2), colour, thickness)
                 label = f"Person: {conf * 100:.2f}%"
                 cv2.putText(frame, label, (x1, y1 - 10), font, scale, colour, thickness)
-    return detections, frame, face_detections
+    return detections, frame, detected_person, confidence
 
 def detection_thread():
     global frame
@@ -74,10 +95,11 @@ def detection_thread():
     while True:
         if frame is not None:
             # Detect both humans (YOLO) and faces (OpenCV)
-            detections, detected_frame, face_detections = detect_humans(frame)
+            detections, detected_frame, detected_person, confidence = detect_humans(frame)
 
-            if face_detections > 0:
-                print(f"Faces detected: {face_detections} face(s) detected.")
+            if detected_person:
+                print(f"Face detected: {detected_person}, {confidence}% confidence")
+
 
             for _, _, _, _, conf in detections:
                 print(f"Human detected: {conf * 100:.2f}% confidence")
