@@ -1,1 +1,0 @@
-Images Captured By Script Go In Here
