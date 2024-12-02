@@ -1,4 +1,6 @@
-Input Images of Faces that You Wish to Be Labelled
+Input Images of Faces that You Wish to Be Trained
 
 
-Naming Scheme > Name_1
+Format
+|_ JohnDoe
+/t|_Image.jpg
