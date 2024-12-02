@@ -74,9 +74,7 @@ def run_blynk():
 blynk_thread = Thread(target=run_blynk, daemon=True)
 blynk_thread.start()
 
-def send_notification(message):
-    global suppress_face_notifications
-        
+def send_notification(message):    
     blynk.log_event("detected",message)  # Send a push notification
 
 @blynk.VIRTUAL_WRITE(V_PIN_FACENOTI)
@@ -95,7 +93,7 @@ def detect_faces(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) # Convert to grayscale
 
     # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4))
+    clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(4, 4))
     gray = clahe.apply(gray)
     faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(100, 100))
     
@@ -105,7 +103,7 @@ def detect_faces(frame):
         face_region = gray[y:y+h, x:x+w]  # Extract face region from the image
         label, confidence = recognizer.predict(face_region)  # Recognize the face
 
-        if (confidence) < 80:  # Convert LBPH's confidence score to match the threshold logic
+        if (confidence) < 55:  # Convert LBPH's confidence score to match the threshold logic
             detected_name = name_mapping.get(label, "Unknown Person")
             print(f"Confidence {confidence} - Good")
         else:
@@ -162,7 +160,7 @@ def detection_thread():
 
                 else:
                     detection_measure=2
-                    detection_message = f"Face detected-{detected_person}-{confidence}% confidence - Time:{current_time} !"
+                    detection_message = f"Face detected-{detected_person} - Time:{current_time} !"
             
             if suppress_face_notifications :
                 print("Notification for face skipped due to switch state.")
