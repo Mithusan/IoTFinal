@@ -8,7 +8,7 @@ The TrueDetect Smart Doorbell is designed to improve home security by combining 
    ```bash
    python3 LBPHTrain.py
    ```
-3. **In main.py, replace "BLYNK_AUTH" with your Blynk Authentication Code
+3. **In main.py, replace "BLYNK_AUTH" with your Blynk Authentication Code**
 
 3. **Run the Main Program**
    ```bash
