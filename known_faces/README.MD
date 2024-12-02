@@ -1,8 +1,3 @@
 Input Images of Faces that You Wish to Be Trained
-
-
-Format
-
-|_ JohnDoe
-
-/t|_Image.jpg
+***Format 
+NameOfPerson > image1.jpg, image2.jpg, image3.jpg, etc.
